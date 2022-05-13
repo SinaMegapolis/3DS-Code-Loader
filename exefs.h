@@ -2,6 +2,7 @@
 
 #include "types.h"
 #include <loader.hpp>
+#include "ncch.h"
 
 struct ExeFs_SectionHeader {
     char name[8];
@@ -96,4 +97,5 @@ struct ExHeader_Header {
     } access_desc;
 };
 
-void load_exefs(linput_t* li);
+void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset);
+static bool is_encrypted(linput_t* li, NCCH::NCCH_Header ncch_header);
