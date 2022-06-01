@@ -72,9 +72,11 @@ static bool LZSS_Decompress(const u8* compressed, u32 compressed_size, u8* decom
     return true;
 }
 
-void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset)
-{
-    qlread(li, &exheader_header, sizeof(exheader_header));
+void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset, ExHeader_Header header){
+    exheader_header = header;
+
+    if(is_encrypted(li, ncch_header))
+        return;
 
     bool is_compressed = (exheader_header.codeset_info.flags.flag & 1) == 1;
 
@@ -117,7 +119,7 @@ void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset)
     set_selector(1, 0);
     if (!add_segm(1, exheader_header.codeset_info.text.address,
         exheader_header.codeset_info.text.address + exheader_header.codeset_info.text.num_max_pages * 0x1000,
-        NAME_CODE, CLASS_CODE))
+        "ExeFS.code", CLASS_CODE))
         qexit(1);
     set_segm_addressing(getseg(exheader_header.codeset_info.text.address), 1); // enable 32bit addressing
     mem2base(&code[offset], exheader_header.codeset_info.text.address,
@@ -128,7 +130,7 @@ void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset)
 
     set_selector(2, 0);
     if (!add_segm(2, exheader_header.codeset_info.ro.address,
-        exheader_header.codeset_info.ro.address + exheader_header.codeset_info.ro.num_max_pages * 0x1000, ".ro",
+        exheader_header.codeset_info.ro.address + exheader_header.codeset_info.ro.num_max_pages * 0x1000, "ExeFS.rodata",
         CLASS_CONST))
         qexit(1);
     mem2base(&code[offset], exheader_header.codeset_info.ro.address,
@@ -137,7 +139,7 @@ void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset)
     set_selector(3, 0);
     if (!add_segm(3, exheader_header.codeset_info.data.address,
         exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.num_max_pages * 0x1000,
-        NAME_DATA, CLASS_DATA))
+        "ExeFS.data", CLASS_DATA))
         qexit(1);
 
     offset =
@@ -151,7 +153,9 @@ void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset)
     add_segm(4, (exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.num_max_pages * 0x1000),
         (exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.num_max_pages * 0x1000) +
         exheader_header.codeset_info.bss_size,
-        NAME_BSS, CLASS_BSS);
+        "ExeFS.bss", CLASS_BSS);
+
+    qlseek(li, 0);
 }
 
 static bool is_encrypted(linput_t* li, NCCH::NCCH_Header ncch_header)

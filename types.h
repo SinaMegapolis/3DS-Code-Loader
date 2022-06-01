@@ -1,3 +1,5 @@
+
+
 #pragma once
 typedef unsigned char		u8;
 typedef unsigned short		u16;
@@ -8,7 +10,3 @@ typedef signed char			s8;
 typedef signed short		s16;
 typedef signed int			s32;
 typedef signed long long	s64;
-
-inline u32 MakeMagic(char a, char b, char c, char d) {
-    return a | b << 8 | c << 16 | d << 24;
-}

@@ -97,5 +97,5 @@ struct ExHeader_Header {
     } access_desc;
 };
 
-void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset);
+void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset, ExHeader_Header header);
 static bool is_encrypted(linput_t* li, NCCH::NCCH_Header ncch_header);
