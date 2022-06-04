@@ -2,13 +2,15 @@
 
 #include "types.h"
 #include "idaldr.h"
+#include <vector>
 
 #ifdef _MSC_VER
 #define PACK( __Declaration__ ) __pragma( pack(push, 4) ) __Declaration__ __pragma( pack(pop))
 #endif
 
-void applyCRS(linput_t* li, u32 actual_romfs_offset, u32 exefscode_offset);
-void loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_address, bool isCrs);
+void applyCRS(linput_t* li, u32 actual_romfs_address, u32 exefscode_offset);
+void applyCROs(linput_t*, u32 actual_romfs_address, u32 offset_to_load_cros);
+u64 loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_address, bool isCrs);
 
 typedef struct {
 	u32 Magic;
@@ -63,48 +65,69 @@ typedef struct {
 	u32 StaticPatchNum;
 } CRO_Header;
 
-typedef struct {
-	u32 SegmentOffset;
-	u32 SegmentSize;
-	u32 SegmentType;
-} SegmentTableEntry;
+namespace ROLinker {
 
-typedef struct {
-	u32 target;
-	u8 patch_type;
-	u8 source;
-	u8 unk6;
-	u8 unk7;
-	u32 addend;
-} RelocationEntry;
+	typedef struct {
+		u32 SegmentOffset;
+		u32 SegmentSize;
+		u32 SegmentType;
+	} SegmentTableEntry;
 
-typedef struct {
-	u32 nameOffset;
-	u32 batchOffset;
-} NamedImportTableEntry;
+	typedef struct {
+		u32 segment_index : 4;
+		u32 offset_into_segment : 28;
+	} SegmentTag;
 
-typedef struct {
-	u32 moduleNameOffset;
-	u32 indexed;
-	u32 indexedNum;
-	u32 anonymous;
-	u32 anonymousNum;
-} ModuleImportTableEntry;
+	typedef struct {
+		SegmentTag target;
+		u8 patch_type;
+		u8 source;
+		u8 unk6;
+		u8 unk7;
+		u32 addend;
+	} RelocationEntry;
 
-typedef struct {
-	u32 nameOffset;
-	u32 target;
-} NamedExportTableEntry;
+	typedef struct {
+		u32 nameOffset;
+		u32 batchOffset;
+	} NamedImportTableEntry;
 
-typedef struct {
-	u32 index;
-	u32 batchOffset;
-} IndexedTableEntry;
+	typedef struct {
+		u32 moduleNameOffset;
+		u32 indexed;
+		u32 indexedNum;
+		u32 anonymous;
+		u32 anonymousNum;
+	} ModuleImportTableEntry;
 
-typedef struct {
-	u32 tag;
-	u32 batchOffset;
-} AnonymousImportEntry;
+	typedef struct {
+		u32 nameOffset;
+		SegmentTag target;
+	} NamedExportTableEntry;
+
+	typedef struct {
+		u32 index;
+		u32 batchOffset;
+	} IndexedTableEntry;
+
+	typedef struct {
+		SegmentTag tag;
+		u32 batchOffset;
+	} AnonymousImportEntry;
+
+	typedef struct {
+		qstring name;
+		CRO_Header header;
+		u64 ro_file_address;
+		std::vector<u64> segmentAddresses; //addresses are from the start of the idb
+		std::vector<ROLinker::SegmentTag> indexedExportTagTable;
+		std::vector<ROLinker::NamedExportTableEntry> namedExportTable;
+	} ModuleInfo;
+
+	void handleInternalRelocations(linput_t* li, ModuleInfo info);
+	void handleExports(linput_t* li, ModuleInfo info);
+	void resolveModuleImports(linput_t* li); //resolves both Anonymous and Indexed imports
+}
 
 namespace RomFS {
 	PACK( typedef struct { //all offsets are from the start of level 3 data. NOT from the start of romfs.bin
@@ -146,7 +169,7 @@ namespace RomFS {
 	u32 findActualRomFSOffset(linput_t* li, u32 ivfc_offset);
 	RomFS::Directory_Metadata findRootDir(linput_t* li, u32 actual_romfs_offset);
 	u64 findCRS(linput_t* li, u32 actual_romfs_offset);
-	void findCROs(linput_t* li, u32 first_file_metadata_offset, u32 actual_romfs_offset);
+	qvector<u64> findCROs(linput_t* li, u32 actual_romfs_offset);
 
 	namespace IVFC {
 		PACK( typedef struct {

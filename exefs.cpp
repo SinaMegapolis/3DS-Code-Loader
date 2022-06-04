@@ -9,6 +9,30 @@ u8 exefscounter[16];
 
 const u32 kBlockSize = 0x200;
 
+/*void load_game_info(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset, ExHeader_Header extheader) {
+    bool startofnewname = true;
+    qstring sdklibs;
+    u32 charindex = ncch_offset + ncch_header.plain_region_offset * kBlockSize;
+    while (true) {
+        qlseek(li, charindex);
+        u8 character;
+        qlread(li, &character, sizeof(u8));
+
+        if (character == '\0') {
+            if (startofnewname == true)
+                break;
+            sdklibs += character;
+            sdklibs += '\n';
+            startofnewname = true;
+        }
+        else {
+            sdklibs += character;
+            startofnewname = false;
+        }
+        charindex += sizeof(u8);
+    }
+}*/
+
 static u32 LZSS_GetDecompressedSize(const u8* buffer, u32 size) {
     u32 offset_size = *(u32*)(buffer + size - 4);
     return offset_size + size;
