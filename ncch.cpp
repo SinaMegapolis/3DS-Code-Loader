@@ -27,10 +27,10 @@ bool NCCH::check_header(linput_t* li)
 void NCCH::load_file(linput_t* li) {
     ExHeader_Header extheader;
     qlread(li, &extheader, sizeof(ExHeader_Header));
-    //load_game_info(li, ncch_header, ncch_offset, extheader); //There's no way to load ncch info onto the IDB without breaking the disassembly because IDA SDK is trash
     load_exefs(li, ncch_header, ncch_offset, extheader);
     u32 romfs_offset = RomFS::findActualRomFSOffset(li, ncch_header.romfs_offset);
-    applyCRS(li, romfs_offset, 0);
-    applyCROs(li, romfs_offset, (extheader.codeset_info.data.address + extheader.codeset_info.data.num_max_pages * 0x1000) +
+    ROHandler handler(li, romfs_offset);
+    handler.applyCRS(0);
+    handler.applyCROs((extheader.codeset_info.data.address + extheader.codeset_info.data.num_max_pages * 0x1000) +
         extheader.codeset_info.bss_size);
 }

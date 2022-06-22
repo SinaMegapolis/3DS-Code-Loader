@@ -41,3 +41,40 @@ u32 change_to_big_endian(u32 input) {
 u64 change_to_big_endian(u64 input) {
 	return _byteswap_uint64(input);
 }
+
+qstring parseSingleLineString(linput_t* li, u32 nameAddress) {
+	qstring result;
+	u32 charindex = nameAddress;
+	while (true) {
+		u8 character;
+		qlseek(li, charindex);
+		qlread(li, &character, sizeof(u8));
+		if (character == '\0')
+			break;
+		result += character;
+		charindex += sizeof(u8);
+	}
+	return result;
+}
+
+qstring decToHex(u32 dec) {
+	qstring hex;
+	while (dec > 0) {
+		u32 rem = dec % 16;
+		if (rem > 9) {
+			switch (rem) {
+			case 10: hex.insert("A"); break;
+			case 11: hex.insert("B"); break;
+			case 12: hex.insert("C"); break;
+			case 13: hex.insert("D"); break;
+			case 14: hex.insert("E"); break;
+			case 15: hex.insert("F"); break;
+			}
+		}
+		else {
+			hex.insert(std::to_string(rem).c_str());
+		}
+		dec = dec / 16;
+	}
+	return hex;
+}

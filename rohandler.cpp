@@ -2,9 +2,7 @@
 #include "util.h"
 
 #define UNINITIALIZED_FIELD 0xFFFFFFFF
-
 const u32 kBlockSize = 0x200;
-std::vector<ROLinker::ModuleInfo> moduleTable;
 
 
 
@@ -12,48 +10,11 @@ std::vector<ROLinker::ModuleInfo> moduleTable;
 
 
 
-static qstring parseSingleLineString(linput_t* li, u32 nameAddress) {
-	qstring result;
-	u32 charindex = nameAddress;
-	while (true) {
-		u8 character;
-		qlseek(li, charindex);
-		qlread(li, &character, sizeof(u8));
-		if (character == '\0')
-			break;
-		result += character;
-		charindex += sizeof(u8);
-	}
-	return result;
-}
-
-static qstring decToHex(u32 dec) {
-	qstring hex;
-	while (dec > 0) {
-		u32 rem = dec % 16;
-		if (rem > 9) {
-			switch (rem) {
-			case 10: hex.insert("A"); break;
-			case 11: hex.insert("B"); break;
-			case 12: hex.insert("C"); break;
-			case 13: hex.insert("D"); break;
-			case 14: hex.insert("E"); break;
-			case 15: hex.insert("F"); break;
-			}
-		}
-		else {
-			hex.insert(std::to_string(rem).c_str());
-		}
-		dec = dec / 16;
-	}
-	return hex;
-}
-
-static u32 DecodeTag(std::vector<u64> segmentTable, ROLinker::SegmentTag tag) {
+u32 ROHandler::decodeTag(std::vector<u64> segmentTable, SegmentTag tag) {
 	return segmentTable[tag.segment_index] + tag.offset_into_segment;
 }
 
-static void patchIntoImport(u64 address, qstring importname, u32 patchedvalue = 0) {
+void ROHandler::patchImport(u64 address, qstring importname, u32 patchedvalue) {
 	qstring import_name = "_import_";
 	force_name(address, import_name.append(importname).c_str());
 	if (patchedvalue > 0) {
@@ -64,28 +25,28 @@ static void patchIntoImport(u64 address, qstring importname, u32 patchedvalue = 
 		set_fixup(address, f);
 	}
     //guess wrapper
-	if (get_dword(address - 4) == 0xE51FF004)
+	if (get_dword(address - 4) == 0xE51FF004) //0xE51FF004 == "ldr pc, [pc, #-4]"
 		force_name(address - 4, importname.c_str());
 }
 
-static void patchABatchIntoImport(linput_t* li, std::vector<u64> segmentAddressTable, u32 batchAddress, qstring fullName, u32 addr = -1) {
+void ROHandler::patchImportBatch(std::vector<u64> segmentAddressTable, u32 batchAddress, qstring fullName, u32 addr) {
 	while (true) {
 		qstring name = fullName;
-		qlseek(li, batchAddress);
-		ROLinker::RelocationEntry entry;
-		qlread(li, &entry, sizeof(ROLinker::RelocationEntry));
-		u32 target_offset = DecodeTag(segmentAddressTable, entry.target);
+		qlseek(m_file_buffer, batchAddress);
+		RelocationEntry entry;
+		qlread(m_file_buffer, &entry, sizeof(RelocationEntry));
+		u32 target_offset = decodeTag(segmentAddressTable, entry.target);
 		if (addr == -1)
-			patchIntoImport(target_offset, name);
+			patchImport(target_offset, name);
 		else {
 			u32 shift_final = entry.addend;
 			if (entry.patch_type == 3)
 				shift_final -= target_offset;
-			patchIntoImport(target_offset, name.append("_0x").append(decToHex(addr).c_str()), addr );
+			patchImport(target_offset, name.append("_0x").append(decToHex(addr).c_str()), addr );
 		}
 		if (entry.source != 0)
 			break;
-		batchAddress = batchAddress + sizeof(ROLinker::RelocationEntry);
+		batchAddress = batchAddress + sizeof(RelocationEntry);
 	}
 }
 
@@ -95,33 +56,33 @@ static void patchABatchIntoImport(linput_t* li, std::vector<u64> segmentAddressT
 
 
 
-void applyCRS(linput_t* li, u32 actual_romfs_address, u32 exefscode_offset){
-	loadRelocatableObject(li, exefscode_offset, RomFS::findCRS(li, actual_romfs_address), true);
+void ROHandler::applyCRS(u32 exefscode_offset){
+	loadRelocatableObject(exefscode_offset, RomFS::findCRS(m_file_buffer, m_romfs_address), true);
 }
 
-void applyCROs(linput_t* li, u32 actual_romfs_address, u32 offset_to_load_cros) {
-	qvector<u64> croAddresses = RomFS::findCROs(li, actual_romfs_address);
+void ROHandler::applyCROs(u32 offset_to_load_cros) {
+	qvector<u64> croAddresses = RomFS::findCROs(m_file_buffer, m_romfs_address);
 	u64 currentAddressToLoadAt = offset_to_load_cros;
-	for (u32 i = 0; i < croAddresses.size(); i++) {
-		currentAddressToLoadAt = loadRelocatableObject(li, currentAddressToLoadAt, croAddresses[i], false);
+	for (u32 i = 0; i < 3; i++) {
+		currentAddressToLoadAt = loadRelocatableObject(currentAddressToLoadAt, croAddresses[i], false);
 	}
-	ROLinker::resolveModuleImports(li);
+	resolveModuleImports();
 }
 
-u64 loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_address, bool isCrs) {
+u64 ROHandler::loadRelocatableObject(u64 idb_address_to_load_at, u64 ro_file_address, bool isCrs) {
 	CRO_Header header;
-	ROLinker::ModuleInfo info;
-	qlseek(li, ro_file_address + 0x80);
-	qlread(li, &header, sizeof(CRO_Header));
+	ModuleInfo info;
+	qlseek(m_file_buffer, ro_file_address + 0x80);
+	qlread(m_file_buffer, &header, sizeof(CRO_Header));
 
 	if (header.Magic != MakeMagic('C', 'R', 'O', '0'))
 		warning("CRS/CRO file not found properly!");
-	info.name = parseSingleLineString(li, ro_file_address + header.NameOffset);
+	info.name = parseSingleLineString(m_file_buffer, ro_file_address + header.NameOffset);
 	info.header = header;
 	info.ro_file_address = ro_file_address;
 
 	if (!isCrs) {
-		file2base(li, ro_file_address, idb_address_to_load_at, idb_address_to_load_at + header.FileSize, 0);
+		file2base(m_file_buffer, ro_file_address, idb_address_to_load_at, idb_address_to_load_at + header.FileSize, 0);
 
 		set_selector(1, 0);
 		add_segm(1, idb_address_to_load_at, idb_address_to_load_at + 0x80, (info.name+".hash").c_str(), CLASS_CONST);
@@ -151,9 +112,9 @@ u64 loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_
 	u64 segmentEntryaddress = ro_file_address + header.SegmentTableOffset;
 	u32 bssSize = 0;
 	for (u32 i = 0; i < header.SegmentNum; i++) {
-		qlseek(li, segmentEntryaddress);
-		ROLinker::SegmentTableEntry entry;
-		qlread(li, &entry, sizeof(ROLinker::SegmentTableEntry));
+		qlseek(m_file_buffer, segmentEntryaddress);
+		SegmentTableEntry entry;
+		qlread(m_file_buffer, &entry, sizeof(SegmentTableEntry));
 		if (entry.SegmentType == 3) { //bss
 			entry.SegmentOffset = header.DataOffset + header.DataSize;
 			bssSize = entry.SegmentSize;
@@ -180,13 +141,13 @@ u64 loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_
 				break;
 			}
 		}
-		segmentEntryaddress += sizeof(ROLinker::SegmentTableEntry);
+		segmentEntryaddress += sizeof(SegmentTableEntry);
 	}
 	
-	ROLinker::handleInternalRelocations(li, info);
-	ROLinker::handleExports(li, info);
+	handleInternalRelocations(info);
+	handleExports(info);
 
-	moduleTable.push_back(info);
+	m_module_table.push_back(info);
 	return idb_address_to_load_at + header.DataOffset + header.DataSize + bssSize;
 }
 
@@ -198,13 +159,13 @@ u64 loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_
 
 u32 RomFS::findActualRomFSOffset(linput_t* li, u32 ivfc_offset)
 {
-	RomFS::IVFC::RomFS_IVFCHeader ivfcheader;
+	RomFS::RomFS_IVFCHeader ivfcheader;
 	u32 ivfc_off = ivfc_offset * kBlockSize;
 	qlseek(li, ivfc_off);
-	qlread(li, &ivfcheader, sizeof(RomFS::IVFC::RomFS_IVFCHeader));
+	qlread(li, &ivfcheader, sizeof(RomFS::RomFS_IVFCHeader));
 	if (ivfcheader.magicid != 0x10000 || MakeMagic('I','V','F','C') != ivfcheader.magic)
 		warning("IVFC not found properly!");
-	return ivfc_off + align64(align64(sizeof(RomFS::IVFC::RomFS_IVFCHeader), 16) + ivfcheader.masterhashsize, 1 << ivfcheader.level3.blocksize);
+	return ivfc_off + align64(align64(sizeof(RomFS::RomFS_IVFCHeader), 16) + ivfcheader.masterhashsize, 1 << ivfcheader.level3.blocksize);
 }
 
 RomFS::Directory_Metadata RomFS::findRootDir(linput_t* li, u32 actual_romfs_offset)
@@ -245,7 +206,6 @@ u64 RomFS::findCRS(linput_t* li, u32 actual_romfs_address)
 		const wchar16_t * extension = filename.substr(filename.rfind('.')).c_str();
 		if (!filename.empty() && filename.rfind('.') != qwstring::npos && wmemcmp(extension, crsformat, 4) == 0) {
 			qlseek(li, actual_romfs_address + current_file.actual_file_data_offset); 
-			//info("Static.crs file located at offset %d!", actual_romfs_offset + header.filedataoffset + current_file.actual_file_data_offset);
 			return actual_romfs_address + header.filedataoffset + current_file.actual_file_data_offset;
 		}
 		current_file_offset = header.file_metadata_table_offset + current_file.sibling_file_offset;
@@ -305,13 +265,13 @@ qvector<u64> RomFS::findCROs(linput_t* li, u32 actual_romfs_address)
 
 
 
-void ROLinker::handleInternalRelocations(linput_t* li, ModuleInfo info) {
+void ROHandler::handleInternalRelocations(ModuleInfo info) {
 	u32 tableEntryAddress = info.ro_file_address + info.header.InternalPatchTableOffset;
 	for (u32 i = 0; i < info.header.InternalPatchNum; i++) {
-		ROLinker::RelocationEntry entry;
-		qlseek(li, tableEntryAddress);
-		qlread(li, &entry, sizeof(ROLinker::RelocationEntry));
-		u32 target_address = DecodeTag(info.segmentAddresses, entry.target);
+		RelocationEntry entry;
+		qlseek(m_file_buffer, tableEntryAddress);
+		qlread(m_file_buffer, &entry, sizeof(RelocationEntry));
+		u32 target_address = decodeTag(info.segmentAddresses, entry.target);
 		u32 source_address = info.segmentAddresses[entry.source] + entry.addend;
 		u32 value;
 		if (entry.patch_type == 2)
@@ -327,19 +287,19 @@ void ROLinker::handleInternalRelocations(linput_t* li, ModuleInfo info) {
 		f.set_type(FIXUP_OFF32);
 		f.off = value;
 		set_fixup(target_address, f);
-		tableEntryAddress += sizeof(ROLinker::RelocationEntry);
+		tableEntryAddress += sizeof(RelocationEntry);
 	}
 }
 
-void ROLinker::handleExports(linput_t* li, ModuleInfo info) {
+void ROHandler::handleExports(ModuleInfo info) {
 	u32 exportNamedEntryAddress = info.ro_file_address + info.header.ExportNamedSymbolTableOffset;
 	for (u32 i = 0; i < info.header.ExportNamedSymbolNum; i++) {
-		qlseek(li, exportNamedEntryAddress);
+		qlseek(m_file_buffer, exportNamedEntryAddress);
 		NamedExportTableEntry entry;
-		qlread(li, &entry, sizeof(NamedExportTableEntry));
+		qlread(m_file_buffer, &entry, sizeof(NamedExportTableEntry));
 		info.namedExportTable.push_back(entry);
-		u32 target_offset = DecodeTag(info.segmentAddresses, entry.target);
-		qstring name = parseSingleLineString(li, info.ro_file_address + entry.nameOffset);
+		u32 target_offset = decodeTag(info.segmentAddresses, entry.target);
+		qstring name = parseSingleLineString(m_file_buffer, info.ro_file_address + entry.nameOffset);
 		if (segtype(target_offset) == SEG_CODE)
 			target_offset &= ~1;
 		add_entry(target_offset, target_offset, name.c_str(), segtype(target_offset) == SEG_CODE);
@@ -349,11 +309,11 @@ void ROLinker::handleExports(linput_t* li, ModuleInfo info) {
 
 	u32 exportIndexedEntryAddress = info.ro_file_address + info.header.ExportIndexedSymbolTableOffset;
 	for (u32 i = 0; i < info.header.ExportIndexedSymbolNum; i++) {
-		qlseek(li, exportIndexedEntryAddress);
+		qlseek(m_file_buffer, exportIndexedEntryAddress);
 		SegmentTag segmentOffsetForExport;
-		qlread(li, &segmentOffsetForExport, sizeof(u32));
+		qlread(m_file_buffer, &segmentOffsetForExport, sizeof(u32));
 		info.indexedExportTagTable.push_back(segmentOffsetForExport);
-		u32 target_offset = DecodeTag(info.segmentAddresses, segmentOffsetForExport);
+		u32 target_offset = decodeTag(info.segmentAddresses, segmentOffsetForExport);
 		if (segtype(target_offset) == SEG_CODE)
 			target_offset &= ~1;
 		qstring indexExp = "indexedExport_";
@@ -363,75 +323,75 @@ void ROLinker::handleExports(linput_t* li, ModuleInfo info) {
 	}
 }
 
-void ROLinker::resolveModuleImports(linput_t* li)
+void ROHandler::resolveModuleImports()
 {
-	if (moduleTable.size() == 0)
+	if (m_module_table.size() == 0)
 		return;
 
-	for (ModuleInfo currentModule : moduleTable) {
+	for (ModuleInfo currentModule : m_module_table) {
 		ModuleInfo targetModule;
 		bool isTargetModuleFound = false;
 		
 		u32 importEntryAddress = currentModule.ro_file_address + currentModule.header.ImportNamedSymbolTableOffset;
 		for (u32 i = 0; i < currentModule.header.ImportNamedSymbolNum; i++) {
-			qlseek(li, importEntryAddress);
-			ROLinker::NamedImportTableEntry entry;
-			qlread(li, &entry, sizeof(ROLinker::NamedImportTableEntry));
-			qstring name = parseSingleLineString(li, currentModule.ro_file_address + entry.nameOffset);
+			qlseek(m_file_buffer, importEntryAddress);
+			NamedImportTableEntry entry;
+			qlread(m_file_buffer, &entry, sizeof(NamedImportTableEntry));
+			qstring name = parseSingleLineString(m_file_buffer, currentModule.ro_file_address + entry.nameOffset);
 			SegmentTag targetTag;
-			if (moduleTable.size() > 0) {
-				for (u32 i = 0; i < moduleTable.size(); i++) {
-					for (u32 b = 0; b < moduleTable[i].namedExportTable.size(); b++) {
-						if (parseSingleLineString(li, moduleTable[i].ro_file_address + moduleTable[i].namedExportTable[b].nameOffset) == name)
-							targetTag = moduleTable[i].namedExportTable[b].target;
-							targetModule = moduleTable[i];
-							qlseek(li, entry.nameOffset);
+			if (m_module_table.size() > 0) {
+				for (u32 i = 0; i < m_module_table.size(); i++) {
+					for (u32 b = 0; b < m_module_table[i].namedExportTable.size(); b++) {
+						if (parseSingleLineString(m_file_buffer, m_module_table[i].ro_file_address + m_module_table[i].namedExportTable[b].nameOffset) == name)
+							targetTag = m_module_table[i].namedExportTable[b].target;
+							targetModule = m_module_table[i];
+							qlseek(m_file_buffer, entry.nameOffset);
 							qstring nI = "namedImport_";
-							patchABatchIntoImport(li, currentModule.segmentAddresses, currentModule.ro_file_address + entry.batchOffset, nI + name, DecodeTag(targetModule.segmentAddresses, targetTag));
+							patchImportBatch(currentModule.segmentAddresses, currentModule.ro_file_address + entry.batchOffset, nI + name, decodeTag(targetModule.segmentAddresses, targetTag));
 					}
 				}
 			}
-			importEntryAddress += sizeof(ROLinker::NamedImportTableEntry);
+			importEntryAddress += sizeof(NamedImportTableEntry);
 		}
 
 
 		u32 importModuleAddress = currentModule.ro_file_address + currentModule.header.ImportModuleTableOffset;
 		for (u32 i = 0; i < currentModule.header.ImportModuleNum; i++) {
-			qlseek(li, importModuleAddress);
-			ROLinker::ModuleImportTableEntry entry;
-			qlread(li, &entry, sizeof(ROLinker::ModuleImportTableEntry));
+			qlseek(m_file_buffer, importModuleAddress);
+			ModuleImportTableEntry entry;
+			qlread(m_file_buffer, &entry, sizeof(ModuleImportTableEntry));
 
-			qstring modulename = parseSingleLineString(li, currentModule.ro_file_address + entry.moduleNameOffset);
+			qstring modulename = parseSingleLineString(m_file_buffer, currentModule.ro_file_address + entry.moduleNameOffset);
 
-			for (u32 i = 0; i < moduleTable.size(); i++) {
-				if (modulename == moduleTable[i].name) {
-					targetModule = moduleTable[i];
+			for (u32 i = 0; i < m_module_table.size(); i++) {
+				if (modulename == m_module_table[i].name) {
+					targetModule = m_module_table[i];
 					isTargetModuleFound = true;
 				}
 			}
 
 			u32 indexedAddress = currentModule.ro_file_address + entry.indexed;
 			for (u32 i = 0; i < entry.indexedNum; i++) {
-				qlseek(li, indexedAddress);
-				ROLinker::IndexedTableEntry indexEntry;
-				qlread(li, &indexEntry, sizeof(ROLinker::IndexedTableEntry));
+				qlseek(m_file_buffer, indexedAddress);
+				IndexedTableEntry indexEntry;
+				qlread(m_file_buffer, &indexEntry, sizeof(IndexedTableEntry));
 				qstring index = qstring(std::to_string(indexEntry.index).c_str());
 				if(isTargetModuleFound == true)
-					patchABatchIntoImport(li, currentModule.segmentAddresses, currentModule.ro_file_address + indexEntry.batchOffset, (modulename+"_index").append(index), DecodeTag(targetModule.segmentAddresses, targetModule.indexedExportTagTable[indexEntry.index]));
-				indexedAddress += sizeof(ROLinker::IndexedTableEntry);
+					patchImportBatch(currentModule.segmentAddresses, currentModule.ro_file_address + indexEntry.batchOffset, (modulename+"_index").append(index), decodeTag(targetModule.segmentAddresses, targetModule.indexedExportTagTable[indexEntry.index]));
+				indexedAddress += sizeof(IndexedTableEntry);
 			}
 
 			u32 anonymousAddress = currentModule.ro_file_address + entry.anonymous;
 			for (u32 i = 0; i < entry.anonymousNum; i++) {
-				qlseek(li, anonymousAddress);
-				ROLinker::AnonymousImportEntry anonEntry;
-				qlread(li, &anonEntry, sizeof(ROLinker::AnonymousImportEntry));
+				qlseek(m_file_buffer, anonymousAddress);
+				AnonymousImportEntry anonEntry;
+				qlread(m_file_buffer, &anonEntry, sizeof(AnonymousImportEntry));
 				if(isTargetModuleFound == true)
-					patchABatchIntoImport(li, currentModule.segmentAddresses, currentModule.ro_file_address + anonEntry.batchOffset, modulename, DecodeTag(targetModule.segmentAddresses, anonEntry.tag));
-				anonymousAddress += sizeof(ROLinker::AnonymousImportEntry);
+					patchImportBatch(currentModule.segmentAddresses, currentModule.ro_file_address + anonEntry.batchOffset, modulename, decodeTag(targetModule.segmentAddresses, anonEntry.tag));
+				anonymousAddress += sizeof(AnonymousImportEntry);
 			}
 			isTargetModuleFound = false;
-			importModuleAddress += sizeof(ROLinker::ModuleImportTableEntry);
+			importModuleAddress += sizeof(ModuleImportTableEntry);
 		}
 	}
 }
