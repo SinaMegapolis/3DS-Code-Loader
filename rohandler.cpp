@@ -53,9 +53,9 @@ static u32 DecodeTag(std::vector<u64> segmentTable, ROLinker::SegmentTag tag) {
 	return segmentTable[tag.segment_index] + tag.offset_into_segment;
 }
 
-static void do_import_name(u64 address, qstring name, u32 patchedvalue = 0) {
+static void patchIntoImport(u64 address, qstring importname, u32 patchedvalue = 0) {
 	qstring import_name = "_import_";
-	force_name(address, import_name.append(name).c_str());
+	force_name(address, import_name.append(importname).c_str());
 	if (patchedvalue > 0) {
 		patch_dword(address, patchedvalue);
 		fixup_data_t f = fixup_data_t();
@@ -65,10 +65,10 @@ static void do_import_name(u64 address, qstring name, u32 patchedvalue = 0) {
 	}
     //guess wrapper
 	if (get_dword(address - 4) == 0xE51FF004)
-		force_name(address - 4, name.c_str());
+		force_name(address - 4, importname.c_str());
 }
 
-static void do_import_batch(linput_t* li, std::vector<u64> segmentAddressTable, u32 batchAddress, qstring fullName, u32 addr = -1) {
+static void patchABatchIntoImport(linput_t* li, std::vector<u64> segmentAddressTable, u32 batchAddress, qstring fullName, u32 addr = -1) {
 	while (true) {
 		qstring name = fullName;
 		qlseek(li, batchAddress);
@@ -76,12 +76,12 @@ static void do_import_batch(linput_t* li, std::vector<u64> segmentAddressTable, 
 		qlread(li, &entry, sizeof(ROLinker::RelocationEntry));
 		u32 target_offset = DecodeTag(segmentAddressTable, entry.target);
 		if (addr == -1)
-			do_import_name(target_offset, name);
+			patchIntoImport(target_offset, name);
 		else {
 			u32 shift_final = entry.addend;
 			if (entry.patch_type == 3)
 				shift_final -= target_offset;
-			do_import_name(target_offset, name.append("_0x").append(decToHex(addr).c_str()), addr );
+			patchIntoImport(target_offset, name.append("_0x").append(decToHex(addr).c_str()), addr );
 		}
 		if (entry.source != 0)
 			break;
@@ -125,12 +125,21 @@ u64 loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_
 
 		set_selector(1, 0);
 		add_segm(1, idb_address_to_load_at, idb_address_to_load_at + 0x80, (info.name+".hash").c_str(), CLASS_CONST);
+		segment_t* hashSeg = getseg(idb_address_to_load_at);
+		hashSeg->set_header_segm(true);
+		hashSeg->perm = SEGPERM_READ;
 
 		set_selector(2, 0);
 		add_segm(2, idb_address_to_load_at + 0x80, idb_address_to_load_at + 0x80 + sizeof(header), (info.name+".header").c_str(), CLASS_CONST);
+		segment_t* headerSeg = getseg(idb_address_to_load_at + 0x80);
+		headerSeg->set_header_segm(true);
+		headerSeg->perm = SEGPERM_READ;
 
 		set_selector(3, 0);
 		add_segm(3, idb_address_to_load_at + header.SegmentTableOffset, idb_address_to_load_at + header.DataOffset, (info.name+".tables").c_str(), CLASS_CONST);
+		segment_t* tablesSeg = getseg(idb_address_to_load_at + header.SegmentTableOffset);
+		tablesSeg->set_header_segm(true);
+		tablesSeg->perm = SEGPERM_READ;
 	}
 
 	qstring segmentDic[4][2]{
@@ -145,7 +154,7 @@ u64 loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_
 		qlseek(li, segmentEntryaddress);
 		ROLinker::SegmentTableEntry entry;
 		qlread(li, &entry, sizeof(ROLinker::SegmentTableEntry));
-		if (entry.SegmentType == 3) {
+		if (entry.SegmentType == 3) { //bss
 			entry.SegmentOffset = header.DataOffset + header.DataSize;
 			bssSize = entry.SegmentSize;
 			if (!isCrs)
@@ -153,8 +162,24 @@ u64 loadRelocatableObject(linput_t* li, u64 idb_address_to_load_at, u64 ro_file_
 		}
 		u64 segAddress = idb_address_to_load_at + entry.SegmentOffset;
 		info.segmentAddresses.push_back(segAddress);
-		if (entry.SegmentSize > 0 && !isCrs)
-			add_segm(0, info.segmentAddresses[i], info.segmentAddresses[i] + entry.SegmentSize, (info.name+segmentDic[entry.SegmentType][1]).c_str(), segmentDic[entry.SegmentType][0].c_str());
+		if (entry.SegmentSize > 0 && !isCrs) {
+			add_segm(0, info.segmentAddresses[i], info.segmentAddresses[i] + entry.SegmentSize, (info.name + segmentDic[entry.SegmentType][1]).c_str(), segmentDic[entry.SegmentType][0].c_str());
+			segment_t* currentSeg = getseg(info.segmentAddresses[i]);
+			switch (entry.SegmentType) {
+			case 0: //.text segment permissions
+				currentSeg->perm = SEGPERM_READ + SEGPERM_EXEC;
+				break;
+			case 1: //.rodata segment permissions
+				currentSeg->perm = SEGPERM_READ;
+				break;
+			case 2: //.data segment permissions
+				currentSeg->perm = SEGPERM_READ + SEGPERM_WRITE;
+				break;
+			case 3: //.bss segment permissions
+				currentSeg->perm = SEGPERM_READ + SEGPERM_WRITE;
+				break;
+			}
+		}
 		segmentEntryaddress += sizeof(ROLinker::SegmentTableEntry);
 	}
 	
@@ -362,7 +387,7 @@ void ROLinker::resolveModuleImports(linput_t* li)
 							targetModule = moduleTable[i];
 							qlseek(li, entry.nameOffset);
 							qstring nI = "namedImport_";
-							do_import_batch(li, currentModule.segmentAddresses, currentModule.ro_file_address + entry.batchOffset, nI + name, DecodeTag(targetModule.segmentAddresses, targetTag));
+							patchABatchIntoImport(li, currentModule.segmentAddresses, currentModule.ro_file_address + entry.batchOffset, nI + name, DecodeTag(targetModule.segmentAddresses, targetTag));
 					}
 				}
 			}
@@ -392,7 +417,7 @@ void ROLinker::resolveModuleImports(linput_t* li)
 				qlread(li, &indexEntry, sizeof(ROLinker::IndexedTableEntry));
 				qstring index = qstring(std::to_string(indexEntry.index).c_str());
 				if(isTargetModuleFound == true)
-					do_import_batch(li, currentModule.segmentAddresses, currentModule.ro_file_address + indexEntry.batchOffset, (modulename+"_index").append(index), DecodeTag(targetModule.segmentAddresses, targetModule.indexedExportTagTable[indexEntry.index]));
+					patchABatchIntoImport(li, currentModule.segmentAddresses, currentModule.ro_file_address + indexEntry.batchOffset, (modulename+"_index").append(index), DecodeTag(targetModule.segmentAddresses, targetModule.indexedExportTagTable[indexEntry.index]));
 				indexedAddress += sizeof(ROLinker::IndexedTableEntry);
 			}
 
@@ -402,7 +427,7 @@ void ROLinker::resolveModuleImports(linput_t* li)
 				ROLinker::AnonymousImportEntry anonEntry;
 				qlread(li, &anonEntry, sizeof(ROLinker::AnonymousImportEntry));
 				if(isTargetModuleFound == true)
-					do_import_batch(li, currentModule.segmentAddresses, currentModule.ro_file_address + anonEntry.batchOffset, modulename, DecodeTag(targetModule.segmentAddresses, anonEntry.tag));
+					patchABatchIntoImport(li, currentModule.segmentAddresses, currentModule.ro_file_address + anonEntry.batchOffset, modulename, DecodeTag(targetModule.segmentAddresses, anonEntry.tag));
 				anonymousAddress += sizeof(ROLinker::AnonymousImportEntry);
 			}
 			isTargetModuleFound = false;

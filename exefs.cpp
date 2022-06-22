@@ -1,5 +1,6 @@
 #include <vector>
 #include "exefs.h"
+#include "segment.hpp"
 
 ExHeader_Header exheader_header;
 ExeFs_Header exefs_header;
@@ -9,29 +10,29 @@ u8 exefscounter[16];
 
 const u32 kBlockSize = 0x200;
 
-/*void load_game_info(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset, ExHeader_Header extheader) {
-    bool startofnewname = true;
-    qstring sdklibs;
+qstring load_game_info(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset, ExHeader_Header extheader) {
+    bool startofnewname = false;
+    qstring game_info = "The List below is all the libraries this game has been linked against.\nMeaning you can find all their functions in this IDB:\n";
     u32 charindex = ncch_offset + ncch_header.plain_region_offset * kBlockSize;
+    qlseek(li, charindex);
     while (true) {
-        qlseek(li, charindex);
         u8 character;
         qlread(li, &character, sizeof(u8));
 
         if (character == '\0') {
             if (startofnewname == true)
                 break;
-            sdklibs += character;
-            sdklibs += '\n';
+            game_info += '\n';
             startofnewname = true;
         }
         else {
-            sdklibs += character;
+            game_info += character;
             startofnewname = false;
         }
         charindex += sizeof(u8);
     }
-}*/
+    return game_info;
+}
 
 static u32 LZSS_GetDecompressedSize(const u8* buffer, u32 size) {
     u32 offset_size = *(u32*)(buffer + size - 4);
@@ -142,28 +143,33 @@ void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset, Ex
 
     set_selector(1, 0);
     if (!add_segm(1, exheader_header.codeset_info.text.address,
-        exheader_header.codeset_info.text.address + exheader_header.codeset_info.text.num_max_pages * 0x1000,
-        "ExeFS.code", CLASS_CODE))
+        exheader_header.codeset_info.text.address + exheader_header.codeset_info.text.code_size,
+        "ExeFS.code.text", CLASS_CODE))
         qexit(1);
     set_segm_addressing(getseg(exheader_header.codeset_info.text.address), 1); // enable 32bit addressing
     mem2base(&code[offset], exheader_header.codeset_info.text.address,
         exheader_header.codeset_info.text.address + exheader_header.codeset_info.text.code_size, -1);
+    segment_t* textseg = getseg(exheader_header.codeset_info.text.address);
+    set_segment_cmt(textseg, load_game_info(li, ncch_header, ncch_offset, exheader_header).c_str(), false);
+    textseg->perm = SEGPERM_READ + SEGPERM_EXEC;
 
     offset =
         aligned ? exheader_header.codeset_info.text.num_max_pages * 0x1000 : exheader_header.codeset_info.text.code_size;
 
     set_selector(2, 0);
     if (!add_segm(2, exheader_header.codeset_info.ro.address,
-        exheader_header.codeset_info.ro.address + exheader_header.codeset_info.ro.num_max_pages * 0x1000, "ExeFS.rodata",
+        exheader_header.codeset_info.ro.address + exheader_header.codeset_info.ro.code_size, "ExeFS.code.rodata",
         CLASS_CONST))
         qexit(1);
     mem2base(&code[offset], exheader_header.codeset_info.ro.address,
         exheader_header.codeset_info.ro.address + exheader_header.codeset_info.ro.code_size, -1);
+    segment_t* roseg = getseg(exheader_header.codeset_info.ro.address);
+    roseg->perm = SEGPERM_READ;
 
     set_selector(3, 0);
     if (!add_segm(3, exheader_header.codeset_info.data.address,
-        exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.num_max_pages * 0x1000,
-        "ExeFS.data", CLASS_DATA))
+        exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.code_size,
+        "ExeFS.code.data", CLASS_DATA))
         qexit(1);
 
     offset =
@@ -172,12 +178,16 @@ void load_exefs(linput_t* li, NCCH::NCCH_Header ncch_header, u32 ncch_offset, Ex
 
     mem2base(&code[offset], exheader_header.codeset_info.data.address,
         exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.code_size, -1);
+    segment_t* dataseg = getseg(exheader_header.codeset_info.data.address);
+    dataseg->perm = SEGPERM_READ + SEGPERM_WRITE;
 
     set_selector(4, 0);
-    add_segm(4, (exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.num_max_pages * 0x1000),
-        (exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.num_max_pages * 0x1000) +
+    add_segm(4, (exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.code_size),
+        (exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.code_size) +
         exheader_header.codeset_info.bss_size,
-        "ExeFS.bss", CLASS_BSS);
+        "ExeFS.code.bss", CLASS_BSS);
+    segment_t* bssseg = getseg(exheader_header.codeset_info.data.address + exheader_header.codeset_info.data.code_size);
+    bssseg->perm = SEGPERM_READ + SEGPERM_WRITE;
 
     qlseek(li, 0);
 }
