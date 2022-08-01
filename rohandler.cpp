@@ -57,13 +57,21 @@ void ROHandler::patchImportBatch(std::vector<u64> segmentAddressTable, u32 batch
 
 
 void ROHandler::applyCRS(u32 exefscode_offset){
-	loadRelocatableObject(exefscode_offset, RomFS::findCRS(m_file_buffer, m_romfs_address), true);
+	u64 CRSAddress = RomFS::findCRS(m_file_buffer, m_index_list);
+	if (CRSAddress > 0)
+		loadRelocatableObject(exefscode_offset, CRSAddress, true);
+	else
+		//warning("The CXI file doesn't contain static.crs! CXI Loader will continue to load ExeFS's code.bin regardless.");
 }
 
 void ROHandler::applyCROs(u32 offset_to_load_cros) {
-	qvector<u64> croAddresses = RomFS::findCROs(m_file_buffer, m_romfs_address);
+	qvector<u64> croAddresses = RomFS::findCROs(m_file_buffer, m_index_list);
 	u64 currentAddressToLoadAt = offset_to_load_cros;
-	for (u32 i = 0; i < 3; i++) {
+	if (croAddresses.size() <= 0) {
+		//warning("The CXI file doesn't contain any CROs! CXI Loader will continue to load ExeFS's code.bin regardless.");
+		return;
+	}
+	for (u32 i = 0; i < croAddresses.size(); i++) {
 		currentAddressToLoadAt = loadRelocatableObject(currentAddressToLoadAt, croAddresses[i], false);
 	}
 	resolveModuleImports();
@@ -168,7 +176,7 @@ u32 RomFS::findActualRomFSOffset(linput_t* li, u32 ivfc_offset)
 	return ivfc_off + align64(align64(sizeof(RomFS::RomFS_IVFCHeader), 16) + ivfcheader.masterhashsize, 1 << ivfcheader.level3.blocksize);
 }
 
-RomFS::Directory_Metadata RomFS::findRootDir(linput_t* li, u32 actual_romfs_offset)
+/*RomFS::Directory_Metadata RomFS::findRootDir(linput_t* li, u32 actual_romfs_offset)
 {
 	RomFS::RomFS_Header header;
 	qlseek(li, actual_romfs_offset);
@@ -180,16 +188,18 @@ RomFS::Directory_Metadata RomFS::findRootDir(linput_t* li, u32 actual_romfs_offs
 	qlread(li, &root_dir, sizeof(RomFS::Directory_Metadata));
 
 	return root_dir;
-}
+}*/
 
-u64 RomFS::findCRS(linput_t* li, u32 actual_romfs_address)
+qvector<RomFS::FileInfo> RomFS::indexRootFiles(linput_t* li, u32 actual_romfs_address)
 {
+	qvector<RomFS::FileInfo> indexlist = qvector<RomFS::FileInfo>();
 	RomFS::RomFS_Header header;
 	qlseek(li, actual_romfs_address);
 	qlread(li, &header, sizeof(RomFS::RomFS_Header));
 
 	RomFS::File_Metadata current_file;
 	u32 current_file_offset = header.file_metadata_table_offset;
+	bool isIndexingComplete = false;
 	while (current_file_offset != UNINITIALIZED_FIELD) {
 		u32 current_file_address = actual_romfs_address + current_file_offset;
 		qlseek(li, current_file_address);
@@ -202,51 +212,43 @@ u64 RomFS::findCRS(linput_t* li, u32 actual_romfs_address)
 		filename.resize(current_file.name_length);
 		qlseek(li, current_file_address + sizeof(RomFS::File_Metadata));
 		qlread(li, filename.begin(), filename.size() * sizeof(filename[0]));
-		const wchar16_t* crsformat = L".crs";
-		const wchar16_t * extension = filename.substr(filename.rfind('.')).c_str();
-		if (!filename.empty() && filename.rfind('.') != qwstring::npos && wmemcmp(extension, crsformat, 4) == 0) {
-			qlseek(li, actual_romfs_address + current_file.actual_file_data_offset); 
-			return actual_romfs_address + header.filedataoffset + current_file.actual_file_data_offset;
-		}
-		current_file_offset = header.file_metadata_table_offset + current_file.sibling_file_offset;
-	}
- 
-}
 
-qvector<u64> RomFS::findCROs(linput_t* li, u32 actual_romfs_address)
-{
-	qvector<u64> croAddresses;
-	RomFS::RomFS_Header header;
-	qlseek(li, actual_romfs_address);
-	qlread(li, &header, sizeof(RomFS::RomFS_Header));
-
-	RomFS::File_Metadata current_file;
-	u32 current_file_offset = header.file_metadata_table_offset;
-	while (current_file_offset != UNINITIALIZED_FIELD) {
-		u32 current_file_address = actual_romfs_address + current_file_offset;
-		qlseek(li, current_file_address);
-		qlread(li, &current_file, sizeof(RomFS::File_Metadata));
-		if (current_file.name_length == 0) {
-			if (current_file.sibling_file_offset == UNINITIALIZED_FIELD) //doesn't seem to happen, but just in case.
-				break;
-			current_file_offset = header.file_metadata_table_offset + current_file.sibling_file_offset;
-			continue;
-		}
-		qwstring filename{};
-		filename.resize(current_file.name_length);
-		qlseek(li, current_file_address + sizeof(RomFS::File_Metadata));
-		qlread(li, filename.begin(), filename.size() * sizeof(filename[0]));
-		const wchar16_t* croformat = L".cro";
-		const wchar16_t* extension = filename.substr(filename.rfind('.')).c_str();
-		if (!filename.empty() && filename.rfind('.') != qwstring::npos && wmemcmp(extension, croformat, 4) == 0) {
-			qlseek(li, actual_romfs_address + current_file.actual_file_data_offset);
-			croAddresses.push_back(actual_romfs_address + header.filedataoffset + current_file.actual_file_data_offset);
-		}
+		RomFS::FileInfo info = RomFS::FileInfo{};
+		info.metadata = current_file;
+		info.fileDataAddress = actual_romfs_address + header.filedataoffset + current_file.actual_file_data_offset;
+		info.name = filename;
+		indexlist.add(info);
 		if (current_file.sibling_file_offset == UNINITIALIZED_FIELD)
 			break;
 		current_file_offset = header.file_metadata_table_offset + current_file.sibling_file_offset;
 	}
+	return indexlist;
+}
 
+u64 RomFS::findCRS(linput_t* li, qvector<RomFS::FileInfo> indexList)
+{
+	for each (RomFS::FileInfo file in indexList)
+	{
+		const wchar16_t* crsformat = L".crs\x18";
+		const wchar16_t* extension = file.name.substr(file.name.rfind('.')).c_str();
+		if (!file.name.empty() && file.name.rfind('.') != qwstring::npos && wcscmp(extension, crsformat) == 0) {
+			return file.fileDataAddress;
+		}
+	}
+	return 0;
+}
+
+qvector<u64> RomFS::findCROs(linput_t* li, qvector<RomFS::FileInfo> indexList)
+{
+	qvector<u64> croAddresses{};
+	for each (RomFS::FileInfo file in indexList)
+	{
+		const wchar16_t* croformat = L".cro";
+		const wchar16_t* extension = file.name.substr(file.name.rfind('.')).c_str();
+		if (!file.name.empty() && file.name.rfind('.') != qwstring::npos && wcscmp(extension, croformat) == 0) {
+			croAddresses.push_back(file.fileDataAddress);
+		}
+	}
 	return croAddresses;
 }
 

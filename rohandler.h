@@ -7,6 +7,78 @@
 #ifdef _MSC_VER
 #define PACK( __Declaration__ ) __pragma( pack(push, 4) ) __Declaration__ __pragma( pack(pop))
 #endif
+
+namespace RomFS {
+
+	PACK(typedef struct { //all offsets are from the start of level 3 data. NOT from the start of romfs.bin
+		u32 header_length;
+
+		u32 dir_hashtable_offset;
+		u32 dir_hashtable_length;
+		u32 dir_metadata_table_offset;
+		u32 dir_metadata_table_length;
+
+		u32 file_hashtable_offset;
+		u32 file_hashtable_length;
+		u32 file_metadata_table_offset;
+		u32 file_metadata_table_length;
+
+		u32 filedataoffset;
+	}) RomFS_Header;
+
+	PACK(typedef struct {
+		u32 parent_dir_offset; //offset for itself if the directory is the RomFS root.
+		u32 sibling_dir_offset; //offset for next directory in the parent directory (order is unknown, possibly Alphabetical order?)
+		u32 child_dir_offset; //offset for the first subdirectory inside the current one (order is unknown, same as above) 
+		u32 child_file_offset; //offset for the first child File 
+		u32 next_hashtablebucket_dir_offset;
+		u32 name_length;
+		//char *name[name_length rounded up to a multiple of 4]; encoding is Unicode.  
+	}) Directory_Metadata;
+
+	typedef struct {
+		u32 parent_dir_index; //index for parent directory inside directory metadata table
+		u32 sibling_file_offset; //offset for next file in the parent directory (order is unknown, possibly Alphabetical order?)
+		u64 actual_file_data_offset;
+		u64 actual_file_data_length;
+		u32 next_hashtablebucket_file_offset;
+		u32 name_length;
+		//char *name[name_length rounded up to a multiple of 4]; encoding is unicode
+	} File_Metadata;
+
+	typedef struct {
+		RomFS::File_Metadata metadata;
+		u64 fileDataAddress;
+		qwstring name;
+	} FileInfo;
+
+	u32 findActualRomFSOffset(linput_t* li, u32 ivfc_offset);
+	//RomFS::Directory_Metadata findRootDir(linput_t* li, u32 actual_romfs_offset);
+	qvector<RomFS::FileInfo> indexRootFiles(linput_t* li, u32 actual_romfs_address);
+	u64 findCRS(linput_t* li, qvector<RomFS::FileInfo> indexList);
+	qvector<u64> findCROs(linput_t* li, qvector<RomFS::FileInfo> indexList);
+
+
+	PACK(typedef struct {
+		u64 logicaloffset;
+		u64 hashdatasize;
+		u32 blocksize; // == log2(actual block size)
+		u8 reserved[4];
+	}) IVFC_LevelHeader;
+
+	typedef struct {
+		u32 magic; //== "IVFC"
+		u32 magicid; //== 0x10000
+		u32 masterhashsize;
+		IVFC_LevelHeader level1;
+		IVFC_LevelHeader level2;
+		IVFC_LevelHeader level3;
+		u8 reserved[4];
+		u8 optionalinfo[4];
+	} RomFS_IVFCHeader;
+
+};
+
 class ROHandler {
 private:
 	typedef struct {
@@ -121,6 +193,7 @@ private:
 
 	linput_t* m_file_buffer; //Buffer for the input file
 	u32 m_romfs_address; //Address for RomFS inside CXI
+	qvector<RomFS::FileInfo> m_index_list;
 	std::vector<ModuleInfo> m_module_table;
 
 	u32 decodeTag(std::vector<u64> segmentTable, SegmentTag tag);
@@ -137,72 +210,9 @@ public:
 	ROHandler(linput_t* input, u32 romfs_address) {
 		m_file_buffer = input;
 		m_romfs_address = romfs_address;
+		m_index_list = RomFS::indexRootFiles(input, romfs_address);
 	}
 
 	void applyCRS(u32 exefscode_offset);
 	void applyCROs(u32 offset_to_load_cros);
-};
-
-namespace RomFS {
-
-	PACK(typedef struct { //all offsets are from the start of level 3 data. NOT from the start of romfs.bin
-		u32 header_length;
-
-		u32 dir_hashtable_offset;
-		u32 dir_hashtable_length;
-		u32 dir_metadata_table_offset;
-		u32 dir_metadata_table_length;
-
-		u32 file_hashtable_offset;
-		u32 file_hashtable_length;
-		u32 file_metadata_table_offset;
-		u32 file_metadata_table_length;
-
-		u32 filedataoffset;
-	}) RomFS_Header;
-
-	PACK(typedef struct {
-		u32 parent_dir_offset; //offset for itself if the directory is the RomFS root.
-		u32 sibling_dir_offset; //offset for next directory in the parent directory (order is unknown, possibly Alphabetical order?)
-		u32 child_dir_offset; //offset for the first subdirectory inside the current one (order is unknown, same as above) 
-		u32 child_file_offset; //offset for the first child File 
-		u32 next_hashtablebucket_dir_offset;
-		u32 name_length;
-		//char *name[name_length rounded up to a multiple of 4]; encoding is Unicode.  
-	}) Directory_Metadata;
-
-	typedef struct {
-		u32 parent_dir_index; //index for parent directory inside directory metadata table
-		u32 sibling_file_offset; //offset for next file in the parent directory (order is unknown, possibly Alphabetical order?)
-		u64 actual_file_data_offset;
-		u64 actual_file_data_length;
-		u32 next_hashtablebucket_file_offset;
-		u32 name_length;
-		//char *name[name_length rounded up to a multiple of 4]; encoding is unicode
-	} File_Metadata;
-
-	u32 findActualRomFSOffset(linput_t* li, u32 ivfc_offset);
-	RomFS::Directory_Metadata findRootDir(linput_t* li, u32 actual_romfs_offset);
-	u64 findCRS(linput_t* li, u32 actual_romfs_offset);
-	qvector<u64> findCROs(linput_t* li, u32 actual_romfs_offset);
-
-	
-	PACK(typedef struct {
-		u64 logicaloffset;
-		u64 hashdatasize;
-		u32 blocksize; // == log2(actual block size)
-		u8 reserved[4];
-	}) IVFC_LevelHeader;
-
-	typedef struct {
-		u32 magic; //== "IVFC"
-		u32 magicid; //== 0x10000
-		u32 masterhashsize;
-		IVFC_LevelHeader level1;
-		IVFC_LevelHeader level2;
-		IVFC_LevelHeader level3;
-		u8 reserved[4];
-		u8 optionalinfo[4];
-	} RomFS_IVFCHeader;
-	
 };
