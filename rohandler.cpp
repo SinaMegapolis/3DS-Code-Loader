@@ -60,7 +60,7 @@ void ROHandler::applyCRS(u32 exefscode_offset){
 	u64 CRSAddress = RomFS::findCRS(m_file_buffer, m_index_list);
 	if (CRSAddress > 0)
 		loadRelocatableObject(exefscode_offset, CRSAddress, true);
-	else
+	//else
 		//warning("The CXI file doesn't contain static.crs! CXI Loader will continue to load ExeFS's code.bin regardless.");
 }
 
